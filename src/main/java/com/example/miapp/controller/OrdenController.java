@@ -71,6 +71,14 @@ public class OrdenController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+        @GetMapping("/by-number/{numeroOrden}")
+        @Operation(summary = "Obtiene una Orden por numeroOrden", description = "Busca una orden usando su número de orden (numeroOrden)")
+        public ResponseEntity<OrdenResponse> getOrdenByNumero(@PathVariable String numeroOrden) {
+                return ordenRepository.findByNumeroOrden(numeroOrden)
+                                .map(orden -> ResponseEntity.ok(toResponse(orden)))
+                                .orElse(ResponseEntity.notFound().build());
+        }
+
     @PostMapping
     @Operation(summary = "Ingresa una nueva Orden", description = "Ingresa una nueva orden al sistema")
     @ApiResponses(value = {

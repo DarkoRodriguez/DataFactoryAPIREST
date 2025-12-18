@@ -1,5 +1,7 @@
 package com.example.miapp.service;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -31,9 +33,10 @@ public class WeatherService {
     }
 
     /**
-     * Use Meteored API: first resolve location hash via
+     * Llamada a a Meteored API para obtener el hash de ubicación via lat/lon:
      * /api/location/v1/search/coords/{lat}/{lon} then call
-     * /api/forecast/v1/daily/{hash} to retrieve daily forecast.
+     * Llamada a a Meteored API para obtener el clima mediante el hash:
+     * /api/forecast/v1/daily/{hash} 
      */
     public WeatherResult getWeather(double lat, double lon) {
         try {
@@ -156,6 +159,122 @@ public class WeatherService {
             return new WeatherResult(summary != null ? summary : "Clima disponible", precipProb);
         } catch (Exception e) {
             log.warn("WeatherService call failed for {},{}: {}", lat, lon, e.toString());
+            return new WeatherResult("Error consultando clima", null);
+        }
+    }
+
+    /**
+     * New: obtain weather by searching text (region/comuna). Uses Meteored
+     * /api/location/v1/search/txt/{texto} to obtain candidate locations,
+     * prefers entries where country_name contains "Chile", then uses the
+     * returned hash to query the daily forecast as in getWeather(lat,lon).
+     */
+    public WeatherResult getWeatherByText(String text) {
+        try {
+            if (text == null || text.isBlank()) {
+                return new WeatherResult("Sin texto de búsqueda", null);
+            }
+            String enc = URLEncoder.encode(text, StandardCharsets.UTF_8);
+            String locationUrl = String.format("%s/api/location/v1/search/txt/%s", meteoredUrl, enc);
+            if (meteoredApiKey != null && !meteoredApiKey.isBlank()) {
+                locationUrl = locationUrl + "?apikey=" + meteoredApiKey;
+            }
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("User-Agent", "Miapp/1.0");
+            if (meteoredApiKey != null && !meteoredApiKey.isBlank()) {
+                headers.set("x-api-key", meteoredApiKey);
+            }
+            HttpEntity<Void> entity = new HttpEntity<>(headers);
+            ResponseEntity<Map> locResp = restTemplate.exchange(locationUrl, HttpMethod.GET, entity, Map.class);
+            Object locBody = locResp.getBody();
+            String hash = null;
+            // expected shape: { ok: true, data: { locations: [ {hash, name, country_name}, ... ] } }
+            if (locBody instanceof Map) {
+                Map m = (Map) locBody;
+                Object data = m.get("data");
+                if (data instanceof Map) {
+                    Object locations = ((Map) data).get("locations");
+                    if (locations instanceof List) {
+                        List list = (List) locations;
+                        // prefer country_name containing Chile
+                        for (Object item : list) {
+                            if (item instanceof Map) {
+                                Map it = (Map) item;
+                                Object country = it.get("country_name");
+                                if (country != null && country.toString().toLowerCase().contains("chile")) {
+                                    Object h = it.get("hash");
+                                    if (h != null) { hash = String.valueOf(h); break; }
+                                }
+                            }
+                        }
+                        // otherwise take first with a hash
+                        if (hash == null && !list.isEmpty()) {
+                            Object first = list.get(0);
+                            if (first instanceof Map && ((Map) first).get("hash") != null) {
+                                hash = String.valueOf(((Map) first).get("hash"));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (hash == null) {
+                log.warn("No hash found from text-search location response: {}", locBody);
+                // try to extract precipitation directly from returned body
+                Double locPrecip = findPrecipitationProbabilityRecursive(locBody);
+                String locSummary = null;
+                if (locBody instanceof Map) {
+                    locSummary = findFirstStringForKeys((Map) locBody, new String[]{"name","description","display_name","summary"});
+                }
+                if (locPrecip != null) {
+                    return new WeatherResult(locSummary != null ? locSummary : "Clima disponible", normalizeProbability(locPrecip));
+                }
+                return new WeatherResult("Sin hash ni datos de ubicación", null);
+            }
+
+            // call forecast by hash (same logic as existing method)
+            String forecastUrl = String.format("%s/api/forecast/v1/daily/%s", meteoredUrl, hash);
+            if (meteoredApiKey != null && !meteoredApiKey.isBlank()) {
+                forecastUrl = forecastUrl + "?apikey=" + meteoredApiKey;
+            }
+            ResponseEntity<Map> foreResp = restTemplate.exchange(forecastUrl, HttpMethod.GET, entity, Map.class);
+            Map foreBody = foreResp.getBody();
+            if (foreBody == null) {
+                return new WeatherResult("Sin datos de forecast", null);
+            }
+
+            Double precipProb = null;
+            String summary = null;
+            Object dataObj = foreBody.get("data");
+            Object daysObj = null;
+            if (dataObj instanceof Map) {
+                daysObj = ((Map) dataObj).get("days");
+            }
+            if (daysObj == null) {
+                daysObj = foreBody.get("days");
+            }
+            if (daysObj instanceof List && !((List) daysObj).isEmpty()) {
+                Object first = ((List) daysObj).get(0);
+                if (first instanceof Map) {
+                    Map day0 = (Map) first;
+                    Object rp = day0.get("rain_probability");
+                    if (rp == null) rp = day0.get("rainProbability");
+                    if (rp == null) rp = day0.get("rain");
+                    precipProb = parseNumberToDouble(rp);
+                    if (precipProb != null) precipProb = normalizeProbability(precipProb);
+                    Object symbol = day0.get("symbol");
+                    Object tmax = day0.get("temperature_max");
+                    if (symbol != null) summary = "Symbol:" + String.valueOf(symbol);
+                    if (summary == null && tmax != null) summary = "Tmax: " + tmax;
+                }
+            }
+
+            if (summary == null) summary = findFirstStringForKeys(foreBody, new String[]{"summary","description","text","title","name"});
+            if (precipProb == null) precipProb = findPrecipitationProbabilityRecursive(foreBody);
+
+            return new WeatherResult(summary != null ? summary : "Clima disponible", precipProb);
+        } catch (Exception e) {
+            log.warn("WeatherService text-search call failed for {}: {}", text, e.toString());
             return new WeatherResult("Error consultando clima", null);
         }
     }

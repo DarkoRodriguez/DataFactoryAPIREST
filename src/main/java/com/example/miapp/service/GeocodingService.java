@@ -36,11 +36,7 @@ public class GeocodingService {
             return Optional.empty();
         }
 
-        // Try several variants to reduce ambiguity (e.g., add country)
-        // Prefer variants that include comuna and Santiago, then country
         String[] variants = new String[] {
-            address + ", Las Condes, Santiago, Chile",
-            address + ", Las Condes, Chile",
             address + ", Santiago, Chile",
             address + ", Chile",
             address

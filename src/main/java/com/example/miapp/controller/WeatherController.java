@@ -13,8 +13,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.miapp.model.Orden;
 import com.example.miapp.repository.OrdenRepository;
-import com.example.miapp.service.GeocodingService;
-import com.example.miapp.service.Location;
 import com.example.miapp.service.WeatherResult;
 import com.example.miapp.service.WeatherService;
 
@@ -24,16 +22,13 @@ import com.example.miapp.service.WeatherService;
 public class WeatherController {
 
     private final OrdenRepository ordenRepository;
-    private final GeocodingService geocodingService;
     private final WeatherService weatherService;
     private final double precipitationThreshold;
 
     public WeatherController(OrdenRepository ordenRepository,
-                             GeocodingService geocodingService,
                              WeatherService weatherService,
                              @org.springframework.beans.factory.annotation.Value("${delivery.precipitation.threshold:0.5}") double precipitationThreshold) {
         this.ordenRepository = ordenRepository;
-        this.geocodingService = geocodingService;
         this.weatherService = weatherService;
         this.precipitationThreshold = precipitationThreshold;
     }
@@ -41,15 +36,10 @@ public class WeatherController {
     @GetMapping("/{orderId}/weather")
     public ResponseEntity<?> weatherForOrder(@PathVariable("orderId") Long orderId) {
         return ordenRepository.findById(orderId).map(orden -> {
-            String address = buildAddressFromOrder(orden);
-            // geocode
-            Location loc = geocodingService.geocode(address).orElse(null);
-            if (loc == null) {
-                Map<String,Object> body = new HashMap<>();
-                body.put("error","No se pudo obtener lat/lon para la dirección de la orden");
-                return ResponseEntity.badRequest().body(body);
-            }
-            WeatherResult wr = weatherService.getWeather(loc.getLat(), loc.getLon());
+            // Prefer buscar por comuna o region (texto) y asumir Chile
+            String searchText = (orden.getComuna() != null && !orden.getComuna().isBlank()) ? orden.getComuna()
+                    : (orden.getRegion() != null ? orden.getRegion() : buildAddressFromOrder(orden));
+            WeatherResult wr = weatherService.getWeatherByText(searchText);
             double threshold = this.precipitationThreshold; // configurable umbral
             Boolean deliveryAvailable = null;
             if (wr.getPrecipitationProbability() == null) {
